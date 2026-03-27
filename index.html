@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CH32V003 Workbench</title>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="src/parser.js"></script>
+  <script src="src/stackgen.js"></script>
+  <script src="src/asmgen.js"></script>
+  <script src="src/assembler.js"></script>
+  <script src="src/disassembler.js"></script>
+  <script src="src/vm.js"></script>
+  <script src="lib/rv003usb_webflasher.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body, #root { height: 100%; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #1e1e2e; color: #cdd6f4;
+      display: flex; flex-direction: column;
+    }
+    #root { height: 100%; display: flex; flex-direction: column; }
+
+    .app { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+    /* Tabs */
+    .tabs {
+      display: flex; flex-shrink: 0;
+      background: #181825; border-bottom: 1px solid #313244;
+    }
+    .tab-btn {
+      padding: 8px 14px; cursor: pointer; font-size: 13px;
+      border: none; background: none; color: #6c7086;
+      white-space: nowrap; border-bottom: 2px solid transparent;
+    }
+    .tab-btn:hover { color: #cdd6f4; }
+    .tab-btn.active { color: #89b4fa; border-bottom-color: #89b4fa; }
+
+    /* Main area */
+    .main { display: flex; flex: 1; overflow: hidden; }
+
+    /* Left panel */
+    .panel {
+      width: 180px; flex-shrink: 0;
+      background: #181825; border-right: 1px solid #313244;
+      padding: 10px; overflow-y: auto;
+    }
+
+    /* Content area */
+    .content { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+    .content textarea {
+      flex: 1; width: 100%;
+      background: #1e1e2e; color: #cdd6f4;
+      font-family: 'Courier New', Consolas, monospace; font-size: 12px;
+      border: none; outline: none; padding: 12px; resize: none;
+    }
+    .log-view {
+      flex: 1; overflow-y: auto; padding: 8px 12px;
+      font-family: 'Courier New', Consolas, monospace; font-size: 12px;
+      background: #11111b; white-space: pre-wrap; word-break: break-all;
+      line-height: 1.5;
+    }
+
+    /* Status bar */
+    .statusbar {
+      background: #89b4fa; color: #1e1e2e;
+      padding: 2px 10px; font-size: 12px; flex-shrink: 0;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+
+    /* Buttons */
+    .btn {
+      display: block; width: 100%; margin-bottom: 6px;
+      padding: 6px 8px; background: #313244; border: 1px solid #45475a;
+      color: #cdd6f4; cursor: pointer; border-radius: 4px; font-size: 12px;
+      text-align: left;
+    }
+    .btn:hover:not(:disabled) { background: #45475a; }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn.primary { background: #89b4fa; color: #1e1e2e; border-color: #89b4fa; }
+    .btn.primary:hover:not(:disabled) { background: #b4d0f7; }
+    .btn.danger { background: #f38ba8; color: #1e1e2e; border-color: #f38ba8; }
+    .btn.danger:hover:not(:disabled) { background: #f5a0b5; }
+
+    .panel-section { margin-bottom: 14px; }
+    .panel-label { font-size: 11px; color: #6c7086; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.05em; }
+    .panel-select {
+      width: 100%; background: #313244; border: 1px solid #45475a;
+      color: #cdd6f4; padding: 4px; font-size: 11px; border-radius: 4px;
+    }
+    .panel-select option { background: #313244; }
+
+    /* LED */
+    .led-wrap { text-align: center; padding: 8px 0; }
+    .led {
+      width: 52px; height: 52px; border-radius: 50%;
+      margin: 0 auto 6px; border: 2px solid #45475a;
+      transition: background 0.08s, box-shadow 0.08s;
+    }
+    .led.on  { background: #a6e3a1; box-shadow: 0 0 16px #a6e3a1, 0 0 6px #a6e3a1; }
+    .led.off { background: #313244; box-shadow: none; }
+    .led-label { font-size: 11px; color: #6c7086; }
+
+    /* VM status indicator */
+    .vm-indicator {
+      display: inline-block; width: 8px; height: 8px;
+      border-radius: 50%; margin-right: 5px; vertical-align: middle;
+    }
+    .vm-indicator.running { background: #a6e3a1; animation: pulse 1s infinite; }
+    .vm-indicator.stopped { background: #6c7086; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+    .upload-input { display: none; }
+    .panel-empty { color: #45475a; font-size: 12px; padding: 8px 0; text-align: center; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useRef, useEffect, useCallback } = React;
+
+/* ---- Sample source files ---- */
+const SAMPLE_BLINK = `const PIN_LED = PC0;
+
+func main()
+{
+\tSystemInit();
+\tfunGpioInitAll();
+\tfunPinMode( PIN_LED, GPIO_Speed_10MHz | GPIO_CNF_OUT_PP );
+\tloop {
+\t\tfunDigitalWrite( PIN_LED, FUN_HIGH );
+\t\tDelay_Ms( 250 );
+\t\tfunDigitalWrite( PIN_LED, FUN_LOW );
+\t\tDelay_Ms( 250 );
+\t}
+}
+
+const PC0 = 32;
+const GPIO_Speed_10MHz = 1;
+const GPIO_CNF_OUT_PP = 0;
+const FUN_LOW = 0;
+const FUN_HIGH = 1;
+
+func SystemInit() {
+\tconst FLASH_ACTLR = 0x40022000;
+\tconst RCC_CTLR    = 0x40021000;
+\tconst RCC_CFGR0   = 0x40021004;
+\tconst STK_CTLR    = 0xE000F000;
+\tconst RCC_PLLON   = 0b01000000000000000000000000;
+\tconst RCC_PLLRDY  = 0b10000000000000000000000000;
+\tconst RCC_SW_PLL  = 0b00000000000000000000000010;
+\tconst RCC_SWS_PLL = 0b00000000000000000000001000;
+\tpoke(FLASH_ACTLR, 1);
+\tpoke(RCC_CTLR, peek(RCC_CTLR) | RCC_PLLON);
+\tloop { if (peek(RCC_CTLR) & RCC_PLLRDY) break; }
+\tpoke(RCC_CFGR0, peek(RCC_CFGR0) | RCC_SW_PLL);
+\tloop { if ((peek(RCC_CFGR0) & 0b1100) == RCC_SWS_PLL) break; }
+\tpoke(STK_CTLR, 1);
+}
+
+func funGpioInitAll() {
+\tconst RCC_APB2PCENR = 0x40021018;
+\tpoke(RCC_APB2PCENR, peek(RCC_APB2PCENR) | 0b110101);
+}
+
+func funPinMode(pin, mode) {
+\tconst GPIO_BASE_START = 0x40010800;
+\tvar gpio_base = GPIO_BASE_START + (pin / 16) * 1024;
+\tvar pin_num = pin & 7;
+\tvar shift = pin_num * 4;
+\tpoke(gpio_base, (peek(gpio_base) & (~(0b1111 << shift))) | ((mode & 0b1111) << shift));
+}
+
+func funDigitalWrite(pin, mode) {
+\tconst GPIO_BASE_START = 0x40010800;
+\tconst GPIO_BSHR_OFFSET = 16;
+\tvar gpio_base = GPIO_BASE_START + (pin / 16) * 1024;
+\tvar pin_num = pin & 15;
+\tif (mode) {
+\t\tpoke(gpio_base + GPIO_BSHR_OFFSET, 1 << pin_num);
+\t} else {
+\t\tpoke(gpio_base + GPIO_BSHR_OFFSET, 1 << (pin_num + 16));
+\t}
+}
+
+func Delay_Ms(ms) {
+\tconst STK_CNT = 0xE000F008;
+\tconst TICKS_PER_MS = 6000;
+\tvar end_time = peek(STK_CNT) + ms * TICKS_PER_MS;
+\tloop {
+\t\tif ((peek(STK_CNT) - end_time) < 0b10000000000000000000000000000000) break;
+\t}
+}`;
+
+const SAMPLE_SIMPLE = `func main() {
+\tconst GPIO_BASE = 0x40010800;
+\tpoke(GPIO_BASE, 1); // CFGLR: Output 10MHz Push-Pull
+
+\tloop {
+\t\tpoke(GPIO_BASE + 16, 1);       // BSHR: Pin 0 High
+\t\tvar i = 0;
+\t\tloop { i = i + 1; if (i == 100) break; }
+\t\tpoke(GPIO_BASE + 16, 1 << 16); // BSHR: Pin 0 Low
+\t\ti = 0;
+\t\tloop { i = i + 1; if (i == 100) break; }
+\t}
+}`;
+
+/* ---- Utilities ---- */
+function hexdumpToBytes(hexdump) {
+  const bytes = [];
+  hexdump.split('\n').forEach(line => {
+    const parts = line.split(':');
+    if (parts.length < 2) return;
+    parts[1].trim().split(/\s+/).forEach(hp => {
+      if (hp.length === 2) bytes.push(parseInt(hp, 16));
+    });
+  });
+  return new Uint8Array(bytes);
+}
+
+function bytesToHexdump(bytes) {
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 16) {
+    out += i.toString(16).padStart(8, '0') + ': ';
+    for (let j = 0; j < 16 && i + j < bytes.length; j++) {
+      out += bytes[i + j].toString(16).padStart(2, '0') + ' ';
+    }
+    out += '\n';
+  }
+  return out;
+}
+
+function fmtTime(ts) {
+  return new Date(ts).toLocaleTimeString();
+}
+
+/* ---- Tab config ---- */
+const TABS = [
+  { id: 'source',  label: 'ソース' },
+  { id: 'ast',     label: 'AST' },
+  { id: 'stack',   label: 'スタック' },
+  { id: 'asm',     label: 'アセンブラ' },
+  { id: 'binary',  label: 'バイナリ' },
+  { id: 'disasm',  label: '逆アセンブル' },
+  { id: 'vm',      label: 'VM' },
+  { id: 'log',     label: 'ログ' },
+];
+
+/* ---- App ---- */
+function App() {
+  const [activeTab, setActiveTab]   = useState('source');
+  const [sourceCode, setSourceCode] = useState(SAMPLE_BLINK);
+  const [astJson,    setAstJson]    = useState('');
+  const [stackCode,  setStackCode]  = useState('');
+  const [asmCode,    setAsmCode]    = useState('');
+  const [hexCode,    setHexCode]    = useState('');
+  const [disasmCode, setDisasmCode] = useState('');
+  const [vmLog,      setVmLog]      = useState([]);
+  const [logEntries, setLogEntries] = useState([]);
+  const [statusMsg,  setStatusMsg]  = useState('準備完了');
+  const [vmRunning,  setVmRunning]  = useState(false);
+  const [ledState,   setLedState]   = useState(false);
+  const [savedFiles, setSavedFiles] = useState(() => {
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('ch32v003_')) keys.push(k);
+    }
+    return keys.sort().reverse();
+  });
+
+  /* Refs that survive re-renders and are safe to use in intervals */
+  const vmRef         = useRef(null);
+  const stepsRef      = useRef(0);
+  const vmRunningRef  = useRef(false);
+  const ledRef        = useRef(false);
+  const pendingVmLog  = useRef([]);
+  const intervalRef   = useRef(null);
+  const uploadRef     = useRef(null);
+  const logEndRef     = useRef(null);
+  const vmLogEndRef   = useRef(null);
+
+  /* ---- Logging ---- */
+  const addLog = useCallback((msg) => {
+    const entry = `[${fmtTime(Date.now())}] ${msg}`;
+    setLogEntries(prev => [...prev, entry].slice(-500));
+    setStatusMsg(msg);
+  }, []);
+
+  /* ---- Compile ---- */
+  function compile() {
+    try {
+      addLog('コンパイル開始...');
+      const tok = new Tokenizer(sourceCode);
+      const par = new Parser(tok);
+      const ast = par.parse();
+      setAstJson(JSON.stringify(ast, null, 2));
+
+      const ir = new StackGenerator().generate(ast);
+      setStackCode(JSON.stringify(ir, null, 2));
+
+      const asm = new AssemblerGenerator().generate(ir);
+      setAsmCode(asm);
+
+      const hex = new Assembler().assemble(asm);
+      setHexCode(hex);
+
+      setDisasmCode(new Disassembler().disassemble(hex));
+
+      addLog('コンパイル完了');
+      setActiveTab('binary');
+    } catch (e) {
+      addLog(`コンパイルエラー: ${e.message}`);
+    }
+  }
+
+  /* ---- Save / Load ---- */
+  function saveSource() {
+    const key = `ch32v003_${Date.now()}`;
+    localStorage.setItem(key, sourceCode);
+    setSavedFiles(prev => [key, ...prev]);
+    addLog(`保存しました (${fmtTime(parseInt(key.slice(9)))})`);
+  }
+
+  function loadSaved(key) {
+    const code = localStorage.getItem(key);
+    if (code) { setSourceCode(code); addLog(`ロード: ${fmtTime(parseInt(key.slice(9)))}`); }
+  }
+
+  function deleteSaved(key) {
+    localStorage.removeItem(key);
+    setSavedFiles(prev => prev.filter(k => k !== key));
+    addLog('削除しました');
+  }
+
+  function loadSample(name) {
+    setSourceCode(name === 'blink' ? SAMPLE_BLINK : SAMPLE_SIMPLE);
+    addLog(`サンプルをロード: ${name}`);
+  }
+
+  /* ---- Binary download / upload ---- */
+  function downloadBin() {
+    if (!hexCode) { addLog('バイナリコードがありません'); return; }
+    const bytes = hexdumpToBytes(hexCode);
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+    Object.assign(document.createElement('a'), { href: url, download: 'output.bin' }).click();
+    URL.revokeObjectURL(url);
+    addLog(`ダウンロード: ${bytes.length} bytes`);
+  }
+
+  function uploadBin(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      const bytes = new Uint8Array(ev.target.result);
+      const hex = bytesToHexdump(bytes);
+      setHexCode(hex);
+      setDisasmCode(new Disassembler().disassemble(hex));
+      addLog(`アップロード: ${file.name} (${bytes.length} bytes)`);
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = '';
+  }
+
+  /* ---- Flash to device ---- */
+  async function flashDevice() {
+    if (!hexCode) { addLog('バイナリコードがありません'); return; }
+    const bytes = hexdumpToBytes(hexCode);
+    const STEP_NAMES = [
+      '準備中', 'USB接続', 'デバイス停止', 'フラッシュ解錠',
+      '検証中', '書き込み中', '書き込み完了', 'アプリ起動'
+    ];
+    try {
+      addLog('デバイスへの書き込み開始...');
+      const ok = await rv003usb_webflasher(bytes, s => {
+        const name = STEP_NAMES[s.step] || `step${s.step}`;
+        addLog(`書き込み: ${name} (${s.offset}/${s.size})`);
+      });
+      addLog(ok ? '書き込み完了!' : '書き込み失敗');
+    } catch (e) {
+      addLog(`書き込みエラー: ${e.message}`);
+    }
+  }
+
+  /* ---- GPIO callback (called from setInterval — no state access) ---- */
+  function makeGpioCallback() {
+    return (addr, val) => {
+      addr >>>= 0; val >>>= 0;
+      const port = addr < 0x40010c00 ? 'A' :
+                   addr < 0x40011000 ? 'B' :
+                   addr < 0x40011400 ? 'C' : 'D';
+      const offset = addr & 0x3ff;
+
+      if (offset === 0x10) {               // BSHR
+        const set   = val & 0xffff;
+        const reset = (val >>> 16) & 0xffff;
+        if (set & 1)   ledRef.current = true;
+        if (reset & 1) ledRef.current = false;
+        const bits = set || reset;
+        if (bits) {
+          const pin = 31 - Math.clz32(bits & -bits);
+          pendingVmLog.current.push(
+            `GPIO Port ${port} Pin ${pin} → ${set ? 'High' : 'Low'}`
+          );
+        }
+      } else if (offset === 0x00) {        // CFGLR
+        pendingVmLog.current.push(
+          `GPIO Port ${port} CFGLR = 0x${val.toString(16)}`
+        );
+      }
+    };
+  }
+
+  /* ---- VM start ---- */
+  function startVM() {
+    if (!hexCode) { addLog('バイナリコードがありません'); return; }
+    if (vmRunningRef.current) stopVM();
+
+    setVmLog([]);
+    pendingVmLog.current = [];
+    ledRef.current = false;
+    setLedState(false);
+    stepsRef.current = 0;
+
+    try {
+      vmRef.current = new VM(
+        hexCode,
+        () => (stepsRef.current * 1000) >>> 0,
+        makeGpioCallback(),
+        null
+      );
+    } catch (e) {
+      addLog(`VM初期化エラー: ${e.message}`);
+      return;
+    }
+
+    vmRunningRef.current = true;
+    setVmRunning(true);
+    setActiveTab('vm');
+    addLog('VM実行開始');
+
+    intervalRef.current = setInterval(() => {
+      if (!vmRunningRef.current || !vmRef.current) return;
+
+      try {
+        for (let i = 0; i < 100; i++) {
+          const word = vmRef.current.read32(vmRef.current.pc);
+          if (word === 0) {
+            pendingVmLog.current.push(
+              `VM終了 (PC=0x${vmRef.current.pc.toString(16)}, ${stepsRef.current} ステップ)`
+            );
+            _stopVM();
+            break;
+          }
+          if (!vmRef.current.step()) {
+            pendingVmLog.current.push(`VM停止 (${stepsRef.current} ステップ)`);
+            _stopVM();
+            break;
+          }
+          stepsRef.current++;
+        }
+      } catch (e) {
+        pendingVmLog.current.push(`VMエラー: ${e.message}`);
+        _stopVM();
+      }
+
+      /* Flush pending log lines and sync LED */
+      setLedState(ledRef.current);
+      const lines = pendingVmLog.current.splice(0);
+      if (lines.length > 0) {
+        setVmLog(prev => [...prev, ...lines].slice(-2000));
+      }
+    }, 16);
+  }
+
+  /* Internal stop — safe to call from interval */
+  function _stopVM() {
+    if (intervalRef.current) { clearInterval(intervalRef.current); intervalRef.current = null; }
+    vmRunningRef.current = false;
+    setVmRunning(false);
+  }
+
+  /* Public stop — also logs */
+  function stopVM() {
+    _stopVM();
+    addLog(`VM停止 (${stepsRef.current} ステップ実行済み)`);
+  }
+
+  /* Cleanup on unmount */
+  useEffect(() => () => { if (intervalRef.current) clearInterval(intervalRef.current); }, []);
+
+  /* Auto-scroll */
+  useEffect(() => { logEndRef.current?.scrollIntoView({ behavior: 'auto' }); }, [logEntries]);
+  useEffect(() => { vmLogEndRef.current?.scrollIntoView({ behavior: 'auto' }); }, [vmLog]);
+
+  /* ---- Render helpers ---- */
+  function renderPanel() {
+    switch (activeTab) {
+      case 'source':
+        return (
+          <>
+            <div className="panel-section">
+              <button className="btn primary" onClick={compile}>コンパイル</button>
+              <button className="btn" onClick={saveSource}>保存</button>
+            </div>
+            <div className="panel-section">
+              <div className="panel-label">サンプル</div>
+              <button className="btn" onClick={() => loadSample('blink')}>LED Blink</button>
+              <button className="btn" onClick={() => loadSample('simple')}>Simple GPIO</button>
+            </div>
+            {savedFiles.length > 0 && (
+              <div className="panel-section">
+                <div className="panel-label">保存済み</div>
+                {savedFiles.map(key => (
+                  <div key={key} style={{ display:'flex', gap:2, marginBottom:4 }}>
+                    <button className="btn" style={{ flex:1, marginBottom:0, fontSize:10, padding:'4px 6px' }}
+                      onClick={() => loadSaved(key)}>
+                      {fmtTime(parseInt(key.slice(9)))}
+                    </button>
+                    <button className="btn" style={{ width:24, marginBottom:0, padding:'4px 0', textAlign:'center', flexShrink:0 }}
+                      onClick={() => deleteSaved(key)} title="削除">×</button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
+        );
+      case 'binary':
+        return (
+          <>
+            <div className="panel-section">
+              <button className="btn primary" onClick={startVM}>実行</button>
+              <button className="btn" onClick={flashDevice}>書き込み</button>
+            </div>
+            <div className="panel-section">
+              <button className="btn" onClick={downloadBin}>BIN ダウンロード</button>
+              <button className="btn" onClick={() => uploadRef.current.click()}>BIN アップロード</button>
+              <input ref={uploadRef} type="file" accept=".bin" className="upload-input" onChange={uploadBin} />
+            </div>
+            {hexCode && (
+              <div style={{ fontSize:11, color:'#6c7086' }}>
+                {hexdumpToBytes(hexCode).length} bytes
+              </div>
+            )}
+          </>
+        );
+      case 'vm':
+        return (
+          <>
+            <div className="panel-section">
+              <button className="btn primary" onClick={startVM}>リセット&amp;実行</button>
+              <button className="btn danger" onClick={stopVM} disabled={!vmRunning}>停止</button>
+            </div>
+            <div className="panel-section">
+              <div style={{ fontSize:12 }}>
+                <span className={`vm-indicator ${vmRunning ? 'running' : 'stopped'}`}></span>
+                {vmRunning ? '実行中' : '停止'}
+              </div>
+            </div>
+            <div className="led-wrap">
+              <div className={`led ${ledState ? 'on' : 'off'}`}></div>
+              <div className="led-label">LED (Pin 0)</div>
+            </div>
+            {vmRunning && (
+              <div style={{ fontSize:11, color:'#6c7086', marginTop:8 }}>
+                {stepsRef.current.toLocaleString()} steps
+              </div>
+            )}
+          </>
+        );
+      case 'log':
+        return (
+          <div className="panel-section">
+            <button className="btn" onClick={() => setLogEntries([])}>クリア</button>
+          </div>
+        );
+      default:
+        return <div className="panel-empty">—</div>;
+    }
+  }
+
+  function renderContent() {
+    switch (activeTab) {
+      case 'source':
+        return <textarea value={sourceCode} onChange={e => setSourceCode(e.target.value)} spellCheck={false} />;
+      case 'ast':
+        return <textarea value={astJson || '(未コンパイル)'} readOnly spellCheck={false} />;
+      case 'stack':
+        return <textarea value={stackCode || '(未コンパイル)'} readOnly spellCheck={false} />;
+      case 'asm':
+        return <textarea value={asmCode || '(未コンパイル)'} readOnly spellCheck={false} />;
+      case 'binary':
+        return <textarea value={hexCode || '(未コンパイル)'} readOnly spellCheck={false} />;
+      case 'disasm':
+        return <textarea value={disasmCode || '(未コンパイル)'} readOnly spellCheck={false} />;
+      case 'vm':
+        return (
+          <div className="log-view">
+            {vmLog.length === 0
+              ? <span style={{ color:'#45475a' }}>実行すると GPIO などのイベントがここに表示されます</span>
+              : vmLog.map((line, i) => <div key={i}>{line}</div>)}
+            <div ref={vmLogEndRef} />
+          </div>
+        );
+      case 'log':
+        return (
+          <div className="log-view">
+            {logEntries.length === 0
+              ? <span style={{ color:'#45475a' }}>ログはありません</span>
+              : logEntries.map((line, i) => <div key={i}>{line}</div>)}
+            <div ref={logEndRef} />
+          </div>
+        );
+      default:
+        return null;
+    }
+  }
+
+  return (
+    <div className="app">
+      <div className="tabs">
+        {TABS.map(t => (
+          <button
+            key={t.id}
+            className={`tab-btn${activeTab === t.id ? ' active' : ''}`}
+            onClick={() => setActiveTab(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+      <div className="main">
+        <div className="panel">{renderPanel()}</div>
+        <div className="content">{renderContent()}</div>
+      </div>
+      <div className="statusbar">{statusMsg}</div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
