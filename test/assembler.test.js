@@ -73,7 +73,7 @@ test('Assembler should encode neg as sub rd, zero, rs', () => {
   // disassemblerで確認: バイト列をデコードして sub になること
   const { Disassembler } = require('../src/disassembler');
   const result = new Disassembler().disassemble(dump);
-  assert.ok(result.includes('sub\tt0,zero,t0'));
+  assert.ok(result.includes('neg\tt0,t0'));
 });
 
 test('Assembler should encode divu and remu', () => {

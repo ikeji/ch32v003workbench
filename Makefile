@@ -38,10 +38,10 @@ run:
 	xxd -r build/output.hex > build/output.bin
 	$(RISCV_OBJDUMP) -b binary -m riscv:rv32 -D build/output.bin > build/disasm-custom-gcc.txt
 	@echo "--- Running in VM ---"
-	cat build/output.hex | node $(SRC_DIR)/vm_cli.js
+	cat build/output.hex | node $(SRC_DIR)/vm_cli.js > build/vm_run_result.txt
 
 # Ensure build directory exists
 $(shell mkdir -p build)
 
 clean:
-	rm -rf build/*.json build/*.asm build/*.hex build/*.bin build/*.txt build/*.o build/*.elf
+	rm -rf build/*
