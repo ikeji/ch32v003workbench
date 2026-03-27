@@ -20,6 +20,7 @@
 
 class AssemblerGenerator {
   generate(ir) {
+    this._labelCounter = 0;
     const initAsm = [];
     const dataAsm = [];
     const codeAsm = [];
@@ -53,6 +54,10 @@ class AssemblerGenerator {
     initAsm.push('reset_handler:                 # リセットハンドラ');
     initAsm.push('    lui sp, 0x20001            # sp 上位 = 0x20001000');
     initAsm.push('    addi sp, sp, -2048         # sp = 0x20000800 (SRAM末尾 = スタック初期値)');
+    initAsm.push('    li t0, 0x1880');
+    initAsm.push('    csrw mstatus, t0           # MPIE=1, MPP=M-mode (割り込みモード設定)');
+    initAsm.push('    li t0, 3');
+    initAsm.push('    csrw mtvec, t0             # 割り込みベクタ = 0x0 (vectoredモード)');
 
     // グローバル変数の初期化: フラッシュの初期値をRAMにコピー
     for (const [name, info] of Object.entries(globalVars)) {
@@ -128,7 +133,7 @@ class AssemblerGenerator {
       out.push(`# [prologue] ローカル変数スロット: ${Array.from({length: M}, (_, k) => `id=${nargs + k} → ${this._localOffset(nargs + k, nargs)}(s0)`).join(', ')}`);
     }
 
-    for (const op of ops) {
+    for (const op of this._peephole(ops)) {
       this._genOp(op, name, nargs, out);
     }
 
@@ -206,8 +211,19 @@ class AssemblerGenerator {
 
       case 'ADD':    this._binaryOp(out, 'add');  break;
       case 'SUB':    this._binaryOp(out, 'sub');  break;
-      case 'MUL':    this._binaryOp(out, 'mul');  break;
-      case 'DIV':    this._binaryOp(out, 'divu'); break;
+      case 'MUL':    this._softMulInline(out, `__smul${this._labelCounter++}`); break;
+      case 'DIV':    this._softDivInline(out, `__sdiv${this._labelCounter++}`); break;
+      case 'CONST_MUL':
+        out.push('    lw t0, 0(sp)');
+        this._constMul(out, op.val);
+        out.push('    sw t0, 0(sp)');
+        break;
+      case 'SHR_IMM':
+        out.push('    lw t0, 0(sp)');
+        out.push(`    li t1, ${op.shift}`);
+        out.push('    srl t0, t0, t1');
+        out.push('    sw t0, 0(sp)');
+        break;
       case 'MOD':    this._binaryOp(out, 'remu'); break;
       case 'AND':    this._binaryOp(out, 'and');  break;
       case 'OR':     this._binaryOp(out, 'or');   break;
@@ -344,6 +360,113 @@ class AssemblerGenerator {
 
       default:
         throw new Error(`Unknown op: ${op.op}`);
+    }
+  }
+
+  // CONST + MUL → CONST_MUL (シフト+加算で展開)
+  // CONST(2の累乗) + DIV → SHR_IMM (シフト右)
+  _peephole(ops) {
+    const result = [];
+    for (let i = 0; i < ops.length; i++) {
+      const op = ops[i];
+      if (op.op === 'CONST') {
+        let j = i + 1;
+        while (j < ops.length && ops[j].op === 'COMMENT') j++;
+        const next = ops[j];
+        if (next && next.op === 'MUL') {
+          for (let k = i + 1; k < j; k++) result.push(ops[k]);
+          result.push({ op: 'CONST_MUL', val: op.val });
+          i = j;
+          continue;
+        }
+        if (next && next.op === 'DIV' && op.val > 0 && (op.val & (op.val - 1)) === 0) {
+          for (let k = i + 1; k < j; k++) result.push(ops[k]);
+          result.push({ op: 'SHR_IMM', shift: Math.log2(op.val) | 0 });
+          i = j;
+          continue;
+        }
+      }
+      result.push(op);
+    }
+    return result;
+  }
+
+  // 非定数乗算: t0 * t1 → t0  シフト+加算ループ (O(32)反復)
+  // 使用レジスタ: t2(積累計), a0(定数1), a1(LSBテスト用)
+  _softMulInline(out, lbl) {
+    out.push('    lw t1, 0(sp)');      // t1 = 右辺 (乗数)
+    out.push('    lw t0, 4(sp)');      // t0 = 左辺 (被乗数)
+    out.push('    addi sp, sp, 4');
+    out.push('    li a0, 1');          // a0 = 1 (シフト量・マスク定数)
+    out.push('    mv t2, zero');       // t2 = 積 = 0
+    out.push(`${lbl}:`);
+    out.push(`    beq t1, zero, ${lbl}_e`);
+    out.push('    and a1, t1, a0');    // a1 = t1 & 1 (LSB)
+    out.push(`    beq a1, zero, ${lbl}_s`);
+    out.push('    add t2, t2, t0');    // 積 += 被乗数
+    out.push(`${lbl}_s:`);
+    out.push('    sll t0, t0, a0');    // 被乗数 <<= 1
+    out.push('    srl t1, t1, a0');    // 乗数 >>= 1
+    out.push(`    j ${lbl}`);
+    out.push(`${lbl}_e:`);
+    out.push('    sw t2, 0(sp)');
+  }
+
+  // 非定数除算(符号なし): t0 / t1 → t0  バイナリ長除算 (O(32)反復)
+  // 使用レジスタ: t2(商), a0(余り), a1(ビットカウンタ), a2(テンポラリ), a3(定数1)
+  _softDivInline(out, lbl) {
+    out.push('    lw t1, 0(sp)');      // t1 = 除数
+    out.push('    lw t0, 4(sp)');      // t0 = 被除数
+    out.push('    addi sp, sp, 4');
+    out.push('    mv t2, zero');       // 商 = 0
+    out.push('    mv a0, zero');       // 余り = 0
+    out.push('    li a1, 31');         // ビットカウンタ (31→0)
+    out.push('    li a3, 1');          // 定数 1
+    out.push(`    beq t1, zero, ${lbl}_e`);  // ÷0 → 商 = 0
+    out.push(`${lbl}:`);
+    // 余り = (余り << 1) | ((被除数 >> bit) & 1)
+    out.push('    sll a0, a0, a3');    // 余り <<= 1
+    out.push('    srl a2, t0, a1');    // a2 = 被除数 >> bit
+    out.push('    and a2, a2, a3');    // a2 &= 1
+    out.push('    or a0, a0, a2');     // 余り |= a2
+    // if 余り >= 除数: 余り -= 除数, 商 |= (1 << bit)
+    out.push('    sltu a2, a0, t1');   // a2 = (余り < 除数)
+    out.push(`    bnez a2, ${lbl}_s`);
+    out.push('    sub a0, a0, t1');    // 余り -= 除数
+    out.push('    sll a2, a3, a1');    // a2 = 1 << bit
+    out.push('    or t2, t2, a2');     // 商 |= a2
+    out.push(`${lbl}_s:`);
+    out.push(`    beq a1, zero, ${lbl}_e`);  // bit=0 まで処理したら終了
+    out.push('    addi a1, a1, -1');   // bit--
+    out.push(`    j ${lbl}`);
+    out.push(`${lbl}_e:`);
+    out.push('    sw t2, 0(sp)');
+  }
+
+  // 定数 val を t0 にかける (t0 = t0 * val) — シフト+加算で展開
+  // t2 を一時レジスタとして使用
+  _constMul(out, val) {
+    val = val >>> 0; // 符号なし32ビットとして扱う
+    if (val === 0) { out.push('    li t0, 0'); return; }
+    if (val === 1) return;
+    const bits = [];
+    for (let b = 0; b < 32; b++) {
+      if ((val >>> b) & 1) bits.push(b);
+    }
+    if (bits.length === 1) {
+      // 2の累乗: シフトのみ
+      out.push(`    li t1, ${bits[0]}`);
+      out.push('    sll t0, t0, t1');
+      return;
+    }
+    // 複数ビット: t2 に元の値を退避してシフト+加算で展開
+    out.push('    mv t2, t0');
+    out.push(`    li t1, ${bits[0]}`);
+    out.push('    sll t0, t2, t1');
+    for (let i = 1; i < bits.length; i++) {
+      out.push(`    li t1, ${bits[i]}`);
+      out.push('    sll t1, t2, t1');
+      out.push('    add t0, t0, t1');
     }
   }
 

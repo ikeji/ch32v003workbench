@@ -3,6 +3,11 @@
  * Advanced RV32E Assembler for TinyC (Robust Section/Pseudo Handling)
  */
 
+const CSR_MAP = {
+  mstatus: 0x300, misa: 0x301, mtvec: 0x305,
+  mscratch: 0x340, mepc: 0x341, mcause: 0x342, mtval: 0x343
+};
+
 const REG_MAP = {
   zero: 0, x0: 0, ra: 1, x1: 1, sp: 2, x2: 2, gp: 3, x3: 3,
   tp: 4, x4: 4, t0: 5, x5: 5, t1: 6, x6: 6, t2: 7, x7: 7,
@@ -178,6 +183,17 @@ class Assembler {
       case 'neg':  return this.fmtR(0x33, 0x0, 0x20, r(args[0]), 0, r(args[1]));
       case 'divu': return this.fmtR(0x33, 0x5, 0x01, r(args[0]), r(args[1]), r(args[2]));
       case 'remu': return this.fmtR(0x33, 0x7, 0x01, r(args[0]), r(args[1]), r(args[2]));
+
+      // CSR instructions (opcode 0x73)
+      case 'csrw': {
+        const csrAddr = CSR_MAP[args[0]] !== undefined ? CSR_MAP[args[0]] : imm(args[0]);
+        return this.fmtI(0x73, 0x1, 0, r(args[1]), csrAddr);
+      }
+      case 'csrr': {
+        const csrAddr = CSR_MAP[args[1]] !== undefined ? CSR_MAP[args[1]] : imm(args[1]);
+        return this.fmtI(0x73, 0x2, r(args[0]), 0, csrAddr);
+      }
+      case 'mret': return 0x30200073;
 
       default: throw new Error(`Unknown instruction: ${op}`);
     }

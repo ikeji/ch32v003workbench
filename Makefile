@@ -7,10 +7,10 @@ RISCV_AS       = riscv64-unknown-elf-as
 RISCV_LD       = riscv64-unknown-elf-ld
 RISCV_OBJCOPY  = riscv64-unknown-elf-objcopy
 RISCV_OBJDUMP  = riscv64-unknown-elf-objdump
-RISCV_ASFLAGS  = -march=rv32em -mabi=ilp32e
+RISCV_ASFLAGS  = -march=rv32e_zicsr -mabi=ilp32e
 RISCV_LDFLAGS  = -T link.ld -m elf32lriscv
 
-.PHONY: all test clean run
+.PHONY: all test clean run inject-sample
 
 all: test
 
@@ -42,6 +42,10 @@ run:
 
 # Ensure build directory exists
 $(shell mkdir -p build)
+
+inject-sample: $(SAMPLE) index.html
+	@echo "--- Injecting $(SAMPLE) into index.html ---"
+	node $(SRC_DIR)/inject_sample.js
 
 clean:
 	rm -rf build/*
