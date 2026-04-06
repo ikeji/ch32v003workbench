@@ -43,8 +43,8 @@ run:
 # Ensure build directory exists
 $(shell mkdir -p build)
 
-inject-sample: $(SAMPLE) index.html
-	@echo "--- Injecting $(SAMPLE) into index.html ---"
+inject-sample: $(SAMPLE) test/fixtures/oled_square.c test/fixtures/badge.c index.html
+	@echo "--- Injecting samples into index.html ---"
 	node $(SRC_DIR)/inject_sample.js
 
 clean:

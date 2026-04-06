@@ -90,8 +90,10 @@ class AssemblerGenerator {
     for (const item of ir) {
       switch (item.type) {
         case 'COMMENT':
-          // top-level IR comments shown as-is
-          codeAsm.push(`# ${item.text}`);
+          // top-level IR comments shown as-is (handle multi-line)
+          for (const line of item.text.split('\n')) {
+            codeAsm.push(`# ${line}`);
+          }
           break;
         case 'VAR':
           dataAsm.push(`# ${JSON.stringify(item)}`);
@@ -170,7 +172,9 @@ class AssemblerGenerator {
 
     switch (op.op) {
       case 'COMMENT':
-        out.push(`# ${op.text}`);
+        for (const line of op.text.split('\n')) {
+          out.push(`# ${line}`);
+        }
         break;
 
       case 'CONST':

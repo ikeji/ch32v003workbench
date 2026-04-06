@@ -50,6 +50,11 @@ function main() {
       } else {
         console.log(`Detail: ${msg}`);
       }
+    },
+    (addr, data) => {
+      // I2C callback
+      const hex = data.map(b => b.toString(16).padStart(2, '0')).join(' ');
+      console.log(`I2C: addr=0x${addr.toString(16)} data=[${hex}] (${data.length} bytes)`);
     }
   );
 

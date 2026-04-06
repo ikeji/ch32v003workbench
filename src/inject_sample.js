@@ -1,19 +1,40 @@
 #!/usr/bin/env node
-// index.html の SAMPLE_BLINK を sample.c の内容で置き換える
+// index.html の SAMPLE_XXX テンプレートリテラルをサンプルファイルの内容で置き換える
 const fs = require('fs');
-const sample = fs.readFileSync('sample.c', 'utf8').trimEnd();
+
+const samples = {
+  SAMPLE_BLINK:  'sample.c',
+  SAMPLE_SQUARE: 'test/fixtures/oled_square.c',
+  SAMPLE_BADGE:  'test/fixtures/badge.c',
+};
+
 let html = fs.readFileSync('index.html', 'utf8');
-if (!/const SAMPLE_BLINK = `[\s\S]*?`;/.test(html)) {
-  console.error('Error: SAMPLE_BLINK marker not found in index.html');
-  process.exit(1);
+let changed = false;
+
+for (const [varName, filePath] of Object.entries(samples)) {
+  if (!fs.existsSync(filePath)) {
+    console.log(`skip: ${filePath} not found`);
+    continue;
+  }
+  const content = fs.readFileSync(filePath, 'utf8').trimEnd();
+  const re = new RegExp('const ' + varName + ' = `[\\s\\S]*?`;');
+  if (!re.test(html)) {
+    console.error(`Error: ${varName} marker not found in index.html`);
+    continue;
+  }
+  const updated = html.replace(re, 'const ' + varName + ' = `' + content + '`;');
+  if (updated !== html) {
+    html = updated;
+    changed = true;
+    console.log(`${varName} ← ${filePath}`);
+  } else {
+    console.log(`${varName}: no change`);
+  }
 }
-const updated = html.replace(
-  /const SAMPLE_BLINK = `[\s\S]*?`;/,
-  'const SAMPLE_BLINK = `' + sample + '`;'
-);
-if (updated === html) {
-  console.log('sample.c は既に index.html と同じ内容です（変更なし）');
+
+if (changed) {
+  fs.writeFileSync('index.html', html);
+  console.log('index.html updated');
 } else {
-  fs.writeFileSync('index.html', updated);
-  console.log('sample.c を index.html に挿入しました');
+  console.log('no changes');
 }

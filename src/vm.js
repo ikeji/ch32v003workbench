@@ -4,7 +4,7 @@
  */
 
 class VM {
-  constructor(hexdump, timer_callback, gpio_callback, log_callback) {
+  constructor(hexdump, timer_callback, gpio_callback, log_callback, i2c_callback) {
     this.regs = new Int32Array(32); // x0..x31 (RV32E only uses x0..x15)
     this.pc   = 0;
     this.flash = new Uint8Array(16384); // 16KB
@@ -14,6 +14,25 @@ class VM {
     this.timer_callback = timer_callback;
     this.gpio_callback  = gpio_callback;
     this.log_callback   = log_callback;
+    this.i2c_callback   = i2c_callback;
+
+    // I2C1 state machine (base 0x40005400)
+    this.i2c = {
+      ctlr1: 0,      // +0x00: Control Register 1
+      ctlr2: 0,      // +0x04: Control Register 2
+      datar: 0,      // +0x10: Data Register
+      star1: 0,      // +0x14: Status Register 1
+      star2: 0,      // +0x18: Status Register 2
+      ckcfgr: 0,     // +0x1C: Clock Configuration
+      addr: 0,       // current slave address
+      buf: [],       // accumulated data bytes
+      state: 'idle', // 'idle' | 'start' | 'addr' | 'data'
+    };
+
+    // ADC state (simple PRNG for noise simulation)
+    this.adc = {
+      seed: (Date.now() ^ 0xDEAD) | 1,  // PRNG state seeded from current time
+    };
 
     this.loadHex(hexdump);
   }
@@ -378,6 +397,8 @@ class VM {
     }
     if (f3 === 0x4) return this._readByte(addr);          // lbu
     if (f3 === 0x5) {                                      // lhu
+      // Peripheral 16-bit reads need special handling
+      if (addr >= 0x40000000) return this._peripheralRead(addr) & 0xffff;
       return this._readByte(addr) | (this._readByte(addr + 1) << 8);
     }
     return 0;
@@ -387,8 +408,25 @@ class VM {
     if (addr === 0x40021000) return 0x03000000; // RCC_CTLR: PLLRDY|HSIRDY set
     if (addr === 0x40021004) return 0x00000008; // RCC_CFGR0: SWS=PLL
     if (addr === 0xE000F008) return this.timer_callback ? this.timer_callback() : 0; // SysTick CNT
+    // I2C1 registers (0x40005400-0x4000541F)
+    if (addr >= 0x40005400 && addr < 0x40005420) return this._i2cRead(addr);
+    // ADC1 registers (base 0x40012400)
+    if (addr >= 0x40012400 && addr < 0x40012500) return this._adcRead(addr);
     // All other peripheral reads: return 0 (UART ready = not-busy = 0)
     return 0;
+  }
+
+  _i2cRead(addr) {
+    const off = addr - 0x40005400;
+    switch (off) {
+      case 0x00: return this.i2c.ctlr1;
+      case 0x04: return this.i2c.ctlr2;
+      case 0x10: return this.i2c.datar;
+      case 0x14: return this.i2c.star1;
+      case 0x18: return this.i2c.star2;
+      case 0x1C: return this.i2c.ckcfgr;
+      default: return 0;
+    }
   }
 
   memWrite(addr, val, f3) {
@@ -410,10 +448,89 @@ class VM {
       } else if (f3 === 0x0) { // sb
         this.sram[o] = val & 0xff;
       }
-    } else if (addr >= 0x40010800 && addr < 0x40011400) { // GPIO
+    } else if (addr >= 0x40010800 && addr < 0x40011800) { // GPIO
       if (this.gpio_callback) this.gpio_callback(addr, val);
+    } else if (addr >= 0x40005400 && addr < 0x40005420) { // I2C1
+      this._i2cWrite(addr, val, f3);
     }
     // Other peripheral writes are silently ignored
+  }
+
+  _i2cWrite(addr, val, f3) {
+    const off = addr - 0x40005400;
+    // For 16-bit writes (sh), mask to 16 bits
+    if (f3 === 0x1) val = val & 0xffff;
+
+    switch (off) {
+      case 0x00: { // CTLR1
+        const prevCtlr1 = this.i2c.ctlr1;
+        this.i2c.ctlr1 = val;
+        // Detect newly set bits
+        const rising = val & ~prevCtlr1;
+        if (rising & 0x200) { // STOP bit newly set
+          // Transaction complete — invoke callback
+          if (this.i2c_callback && this.i2c.buf.length > 0) {
+            this.i2c_callback(this.i2c.addr, this.i2c.buf);
+          }
+          this.i2c.state = 'idle';
+          this.i2c.star1 = 0;
+          this.i2c.star2 = 0;
+          this.i2c.buf = [];
+          this.i2c.ctlr1 = val & ~0x300; // clear START+STOP bits
+        } else if (rising & 0x100) { // START bit newly set
+          this.i2c.state = 'start';
+          this.i2c.buf = [];
+          // SB=1 (bit 0), BUSY=1 (STAR2 bit 1), MSL=1 (STAR2 bit 0)
+          this.i2c.star1 = 0x0001;
+          this.i2c.star2 = 0x0003;
+          this.i2c.ctlr1 = val & ~0x100; // clear START bit
+        }
+        break;
+      }
+      case 0x04: // CTLR2
+        this.i2c.ctlr2 = val;
+        break;
+      case 0x10: { // DATAR
+        this.i2c.datar = val;
+        if (this.i2c.state === 'start') {
+          // First byte after START is address
+          this.i2c.addr = (val >> 1) & 0x7f;
+          this.i2c.state = 'addr';
+          // ADDR=1 (bit 1), TXE=1 (bit 7), BUSY+MSL+TRA set in STAR2
+          this.i2c.star1 = 0x0082;
+          this.i2c.star2 = 0x0007;
+        } else {
+          // Data byte
+          this.i2c.state = 'data';
+          this.i2c.buf.push(val & 0xff);
+          // TXE=1 (bit 7), BTF=1 (bit 2)
+          this.i2c.star1 = 0x0084;
+          this.i2c.star2 = 0x0007;
+        }
+        break;
+      }
+      case 0x1C: // CKCFGR
+        this.i2c.ckcfgr = val;
+        break;
+    }
+  }
+
+  _adcRead(addr) {
+    const off = addr - 0x40012400;
+    switch (off) {
+      case 0x00: // STATR — always report EOC (bit 1) so adc_get() doesn't spin
+        return 0x02;
+      case 0x08: // CTLR2 — report ADON, clear RSTCAL/CAL bits so init loops finish
+        return 0x01;
+      case 0x4C: { // RDATAR — return pseudo-random 10-bit value (ADC noise)
+        this.adc.seed ^= this.adc.seed << 13;
+        this.adc.seed ^= this.adc.seed >>> 17;
+        this.adc.seed ^= this.adc.seed << 5;
+        return (this.adc.seed >>> 0) & 0x3FF;
+      }
+      default:
+        return 0;
+    }
   }
 }
 
