@@ -166,3 +166,24 @@ test('StackGen should reject assignment to data name', () => {
     /Cannot assign to data declaration/
   );
 });
+
+test('StackGen should throw error when calling undefined function', () => {
+  assert.throws(
+    () => getIR('func main() { foo(); }'),
+    /Undefined function: 'foo'/
+  );
+});
+
+test('StackGen should allow calling defined function', () => {
+  const ir = getIR('func foo() { return 1; } func main() { return foo(); }');
+  const main = ir.find(item => item.type === 'FUNC' && item.name === 'main');
+  const ops = main.ops.filter(i => i.op !== 'COMMENT');
+  assert.ok(ops.some(i => i.op === 'CALL' && i.name === 'foo'));
+});
+
+test('StackGen should allow forward reference to function', () => {
+  const ir = getIR('func main() { return foo(); } func foo() { return 1; }');
+  const main = ir.find(item => item.type === 'FUNC' && item.name === 'main');
+  const ops = main.ops.filter(i => i.op !== 'COMMENT');
+  assert.ok(ops.some(i => i.op === 'CALL' && i.name === 'foo'));
+});

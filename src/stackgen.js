@@ -8,6 +8,7 @@ class StackGenerator {
     this.output = [];
     this.constants = new Map();
     this.globals = new Set();
+    this.functions = new Set();
     this.dataDecls = new Map();
     this.labelCount = 0;
     this.loopStack = [];
@@ -17,6 +18,7 @@ class StackGenerator {
     this.output = [];
     this.constants.clear();
     this.globals.clear();
+    this.functions.clear();
     this.dataDecls.clear();
     this.labelCount = 0;
 
@@ -41,10 +43,13 @@ class StackGenerator {
         }
       }
     }
-    // Collect global variable names
+    // Collect global variable names and function names
     for (const node of ast.body) {
       if (node.type === 'VariableDeclaration') {
         this.globals.add(node.name);
+      }
+      if (node.type === 'FunctionDeclaration') {
+        this.functions.add(node.name);
       }
     }
 
@@ -342,6 +347,9 @@ class StackGenerator {
         if (builtins[node.callee]) {
           this.emit(ops, builtins[node.callee]);
         } else {
+          if (!this.functions.has(node.callee)) {
+            throw new Error(`Undefined function: '${node.callee}'`);
+          }
           this.emit(ops, 'CALL', node.callee, node.arguments.length);
         }
         break;

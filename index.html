@@ -362,6 +362,7 @@ function App() {
   /* ---- Logging ---- */
   const addLog = useCallback((msg) => {
     const entry = `[${fmtTime(Date.now())}] ${msg}`;
+    console.log(entry);
     setLogEntries(prev => [...prev, entry].slice(-500));
     setStatusMsg(msg);
   }, []);
@@ -370,6 +371,7 @@ function App() {
   function compile() {
     try {
       addLog('コンパイル開始...');
+      const startTime = performance.now();
       const tok = new Tokenizer(sourceCode);
       const par = new Parser(tok);
       const ast = par.parse();
@@ -386,7 +388,8 @@ function App() {
 
       setDisasmCode(new Disassembler().disassemble(hex));
 
-      addLog('コンパイル完了');
+      const elapsed = (performance.now() - startTime).toFixed(1);
+      addLog(`コンパイル完了 (${elapsed}ms)`);
       setActiveTab('binary');
     } catch (e) {
       addLog(`コンパイルエラー: ${e.message}`);
