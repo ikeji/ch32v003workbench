@@ -10,6 +10,33 @@ function parseNumberLiteral(s) {
   return parseInt(s, 10);
 }
 
+function parseStringLiteral(s) {
+  const inner = s.slice(1, -1);
+  const bytes = [];
+  for (let i = 0; i < inner.length; i++) {
+    if (inner[i] === '\\') {
+      i++;
+      switch (inner[i]) {
+        case 'n': bytes.push(10); break;
+        case 'r': bytes.push(13); break;
+        case 't': bytes.push(9); break;
+        case '\\': bytes.push(92); break;
+        case '"': bytes.push(34); break;
+        case '0': bytes.push(0); break;
+        case 'x':
+          bytes.push(parseInt(inner.slice(i + 1, i + 3), 16));
+          i += 2;
+          break;
+        default:
+          throw new Error(`Unknown escape sequence: \\${inner[i]}`);
+      }
+    } else {
+      bytes.push(inner.charCodeAt(i));
+    }
+  }
+  return bytes;
+}
+
 class Tokenizer {
   constructor(source) {
     this.source = source;
@@ -23,7 +50,8 @@ class Tokenizer {
       { type: 'COMMENT', regex: /^\/\/.*|^\/\*[\s\S]*?\*\// },
       { type: 'WHITESPACE', regex: /^\s+/ },
       { type: 'NUMBER', regex: /^(0x[0-9a-fA-F]+|0b[01]+|0[0-7]*|[0-9]+)/ },
-      { type: 'KEYWORD', regex: /^(func|const|var|if|else|return|loop|break|continue)\b/ },
+      { type: 'STRING', regex: /^"([^"\\]|\\.)*"/ },
+      { type: 'KEYWORD', regex: /^(func|const|var|if|else|return|loop|break|continue|data|sizeof)\b/ },
       { type: 'IDENTIFIER', regex: /^[a-zA-Z_][a-zA-Z0-9_]*/ },
       { type: 'OPERATOR', regex: /^(<<|>>|==|!=|<=|>=|&&|\|\||[+\-*/%&|^~<>!?:=])/ },
       { type: 'PUNCTUATION', regex: /^[(){},;]/ },
@@ -101,6 +129,7 @@ class Parser {
       if (token.value === 'func') return this.parseFunction();
       if (token.value === 'const') return this.parseGlobalConst();
       if (token.value === 'var') return this.parseGlobalVar();
+      if (token.value === 'data') return this.parseDataDeclaration();
     }
     throw new Error(`Unexpected top-level token: ${token.value}`);
   }
@@ -191,6 +220,55 @@ class Parser {
   }
 
   parseGlobalConst() { return this.parseConstDeclaration(); }
+
+  parseDataDeclaration() {
+    const startPos = this._startPos();
+    this.tokenizer.expect('KEYWORD', 'data');
+    const name = this.tokenizer.expect('IDENTIFIER').value;
+    this.tokenizer.expect('OPERATOR', '=');
+
+    const next = this.tokenizer.peek();
+    let dataType, values;
+
+    if (next.type === 'STRING') {
+      dataType = 'string';
+      const token = this.tokenizer.next();
+      values = parseStringLiteral(token.value);
+    } else if (next.value === '{') {
+      dataType = 'bytes';
+      this.tokenizer.next();
+      values = [];
+      if (this.tokenizer.peek().value !== '}') {
+        values.push(this._parseByteValue());
+        while (this.tokenizer.peek().value === ',') {
+          this.tokenizer.next();
+          if (this.tokenizer.peek().value === '}') break;
+          values.push(this._parseByteValue());
+        }
+      }
+      this.tokenizer.expect('PUNCTUATION', '}');
+    } else {
+      throw new Error('Expected string literal or { after data name =');
+    }
+
+    this.tokenizer.expect('PUNCTUATION', ';');
+    return {
+      type: 'DataDeclaration',
+      src: this._srcFrom(startPos),
+      name,
+      dataType,
+      values
+    };
+  }
+
+  _parseByteValue() {
+    const token = this.tokenizer.expect('NUMBER');
+    const val = parseNumberLiteral(token.value);
+    if (val < 0 || val > 255) {
+      throw new Error(`Byte value out of range (0-255): ${val}`);
+    }
+    return val;
+  }
 
   parseIf() {
     const startPos = this._startPos();
@@ -387,6 +465,12 @@ class Parser {
       }
       return { type: 'Identifier', name: token.value };
     }
+    if (token.type === 'KEYWORD' && token.value === 'sizeof') {
+      this.tokenizer.expect('PUNCTUATION', '(');
+      const name = this.tokenizer.expect('IDENTIFIER').value;
+      this.tokenizer.expect('PUNCTUATION', ')');
+      return { type: 'SizeofExpression', name };
+    }
     if (token.value === '(') {
       const expr = this.parseExpression();
       this.tokenizer.expect('PUNCTUATION', ')');
@@ -397,5 +481,5 @@ class Parser {
 }
 
 if (typeof module !== 'undefined') {
-  module.exports = { Tokenizer, Parser };
+  module.exports = { Tokenizer, Parser, parseStringLiteral };
 }

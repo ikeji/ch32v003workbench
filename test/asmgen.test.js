@@ -50,3 +50,26 @@ test('AsmGen should generate inline peek/poke', () => {
   assert.ok(asm.includes('lw t0, 0(t0)'));  // peek: load from addr
   assert.ok(asm.includes('sw t1, 0(t0)'));  // poke: store value to addr
 });
+
+test('AsmGen should emit .byte directives for data declaration', () => {
+  const asm = getAsm('data TABLE = { 0x10, 0x20 }; func main() { return 0; }');
+  assert.ok(asm.includes('data_TABLE:'), 'should have data label');
+  assert.ok(asm.includes('.byte 16'), 'should have .byte 16');
+  assert.ok(asm.includes('.byte 32'), 'should have .byte 32');
+  assert.ok(asm.includes('.align 2'), 'should have .align 2');
+});
+
+test('AsmGen should emit la for DATA_ADDR', () => {
+  const asm = getAsm('data TABLE = { 1 }; func main() { return TABLE; }');
+  assert.ok(asm.includes('la t0, data_TABLE'), 'should use la to load data address');
+});
+
+test('AsmGen full pipeline with data and peek8', () => {
+  const source = 'data MSG = "AB"; func main() { return peek8(MSG); }';
+  const asm = getAsm(source);
+  assert.ok(asm.includes('data_MSG:'));
+  assert.ok(asm.includes('.byte 65'));
+  assert.ok(asm.includes('.byte 66'));
+  assert.ok(asm.includes('la t0, data_MSG'));
+  assert.ok(asm.includes('lbu t0, 0(t0)'));  // peek8
+});

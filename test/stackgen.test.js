@@ -131,3 +131,38 @@ test('StackGen should NOT emit POP after poke (no return value)', () => {
   const ops = main.ops.filter(i => i.op !== 'COMMENT').map(i => i.op);
   assert.ok(!ops.includes('POP'));
 });
+
+test('StackGen should emit DATA IR node for data declaration', () => {
+  const ir = getIR('data TABLE = { 1, 2, 3 }; func main() { return 0; }');
+  const dataEntry = ir.find(item => item.type === 'DATA' && item.name === 'TABLE');
+  assert.ok(dataEntry, 'DATA IR node should exist');
+  assert.deepStrictEqual(dataEntry.values, [1, 2, 3]);
+});
+
+test('StackGen should emit DATA_ADDR when data name used in expression', () => {
+  const ir = getIR('data TABLE = { 1, 2, 3 }; func main() { return TABLE; }');
+  const main = getFunc(ir, 'main');
+  const ops = main.ops.filter(i => i.op !== 'COMMENT');
+  assert.ok(ops.some(i => i.op === 'DATA_ADDR' && i.name === 'TABLE'));
+});
+
+test('StackGen sizeof should resolve to constant at compile time', () => {
+  const ir = getIR('data T = { 1, 2, 3 }; const LEN = sizeof(T); func main() { return LEN; }');
+  const main = getFunc(ir, 'main');
+  const ops = main.ops.filter(i => i.op !== 'COMMENT');
+  assert.ok(ops.some(i => i.op === 'CONST' && i.val === 3));
+});
+
+test('StackGen sizeof in function body', () => {
+  const ir = getIR('data T = { 1, 2 }; func main() { return sizeof(T); }');
+  const main = getFunc(ir, 'main');
+  const ops = main.ops.filter(i => i.op !== 'COMMENT');
+  assert.ok(ops.some(i => i.op === 'CONST' && i.val === 2));
+});
+
+test('StackGen should reject assignment to data name', () => {
+  assert.throws(
+    () => getIR('data T = { 1 }; func main() { T = 0; }'),
+    /Cannot assign to data declaration/
+  );
+});

@@ -60,6 +60,12 @@ class Assembler {
       }
       if (parts[0] === '.word') {
         this.pc += 4; ln.size = 4;
+      } else if (parts[0] === '.byte') {
+        this.pc += 1; ln.size = 1;
+      } else if (parts[0] === '.align') {
+        const alignment = 1 << parseInt(parts[1]);
+        const padding = (alignment - (this.pc % alignment)) % alignment;
+        this.pc += padding; ln.size = padding;
       } else if (parts[0].startsWith('.')) {
         ln.size = 0;
       } else {
@@ -77,6 +83,17 @@ class Assembler {
 
       if (op === '.word') {
         this.write32(this.parseVal(args[0]));
+        return;
+      }
+      if (op === '.byte') {
+        this.buffer[this.pc++] = this.parseVal(args[0]) & 0xff;
+        return;
+      }
+      if (op === '.align') {
+        const alignment = 1 << parseInt(args[0]);
+        while (this.pc % alignment !== 0) {
+          this.buffer[this.pc++] = 0;
+        }
         return;
       }
       if (op.startsWith('.')) return;

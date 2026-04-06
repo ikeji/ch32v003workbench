@@ -8,6 +8,7 @@ class StackGenerator {
     this.output = [];
     this.constants = new Map();
     this.globals = new Set();
+    this.dataDecls = new Map();
     this.labelCount = 0;
     this.loopStack = [];
   }
@@ -16,7 +17,15 @@ class StackGenerator {
     this.output = [];
     this.constants.clear();
     this.globals.clear();
+    this.dataDecls.clear();
     this.labelCount = 0;
+
+    // Collect data declarations first (no forward refs in values)
+    for (const node of ast.body) {
+      if (node.type === 'DataDeclaration') {
+        this.dataDecls.set(node.name, node.values);
+      }
+    }
 
     // First pass: collect global constants (repeat until stable to resolve forward refs)
     let changed = true;
@@ -53,6 +62,10 @@ class StackGenerator {
 
   evaluate(node) {
     if (node.type === 'Literal') return node.value;
+    if (node.type === 'SizeofExpression') {
+      if (this.dataDecls.has(node.name)) return this.dataDecls.get(node.name).length;
+      return undefined;
+    }
     if (node.type === 'Identifier' && this.constants.has(node.name)) {
       return this.constants.get(node.name);
     }
@@ -90,6 +103,11 @@ class StackGenerator {
       if (node.src) this.output.push({ type: 'COMMENT', text: node.src });
       const val = node.init ? (this.evaluate(node.init) ?? 0) : 0;
       this.output.push({ type: 'VAR', name: node.name, value: val });
+      return;
+    }
+    if (node.type === 'DataDeclaration') {
+      if (node.src) this.output.push({ type: 'COMMENT', text: node.src });
+      this.output.push({ type: 'DATA', name: node.name, values: node.values });
       return;
     }
     if (node.type === 'FunctionDeclaration') {
@@ -131,6 +149,7 @@ class StackGenerator {
     else if (op === 'LOAD' || op === 'SAVE') instr.id = rest[0];
     else if (op === 'GET' || op === 'PUT') instr.name = rest[0];
     else if (op === 'CALL') { instr.name = rest[0]; instr.nargs = rest[1]; }
+    else if (op === 'DATA_ADDR') instr.name = rest[0];
     else if (op === 'LABEL' || op === 'GOTO' || op === 'IF_GOTO') instr.name = rest[0];
     else if (op === 'COMMENT') instr.text = rest[0];
     ops.push(instr);
@@ -258,6 +277,8 @@ class StackGenerator {
       case 'Identifier':
         if (this.constants.has(node.name)) {
           this.emit(ops, 'CONST', this.constants.get(node.name));
+        } else if (this.dataDecls.has(node.name)) {
+          this.emit(ops, 'DATA_ADDR', node.name);
         } else if (locals.has(node.name)) {
           this.emit(ops, 'LOAD', locals.get(node.name));
         } else {
@@ -265,9 +286,19 @@ class StackGenerator {
         }
         break;
 
+      case 'SizeofExpression':
+        if (!this.dataDecls.has(node.name)) {
+          throw new Error(`sizeof: unknown data declaration '${node.name}'`);
+        }
+        this.emit(ops, 'CONST', this.dataDecls.get(node.name).length);
+        break;
+
       case 'AssignmentExpression':
         this.visitExpr(node.right, locals, ops);
         if (node.left.type !== 'Identifier') throw new Error('Invalid assignment target');
+        if (this.dataDecls.has(node.left.name)) {
+          throw new Error(`Cannot assign to data declaration '${node.left.name}'`);
+        }
         if (locals.has(node.left.name)) {
           this.emit(ops, 'SAVE', locals.get(node.left.name));
         } else {

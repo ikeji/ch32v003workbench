@@ -100,6 +100,14 @@ class AssemblerGenerator {
             dataAsm.push(`var_${item.name}_init: .word ${item.value}`);
           }
           break;
+        case 'DATA':
+          dataAsm.push(`# data ${item.name} (${item.values.length} bytes)`);
+          dataAsm.push(`data_${item.name}:`);
+          for (const byte of item.values) {
+            dataAsm.push(`  .byte ${byte}`);
+          }
+          dataAsm.push('  .align 2');
+          break;
         case 'FUNC':
           this._genFunc(item, codeAsm);
           break;
@@ -167,6 +175,12 @@ class AssemblerGenerator {
 
       case 'CONST':
         out.push(`    li t0, ${op.val}`);
+        out.push('    addi sp, sp, -4');
+        out.push('    sw t0, 0(sp)');
+        break;
+
+      case 'DATA_ADDR':
+        out.push(`    la t0, data_${op.name}`);
         out.push('    addi sp, sp, -4');
         out.push('    sw t0, 0(sp)');
         break;

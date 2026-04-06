@@ -106,6 +106,49 @@ test('Assembler li with bit31 set and lower=0 emits only lui (4 bytes)', () => {
   assert.ok(dump.includes('b7 f2 00 e0'), `Expected e000f2b7, got: ${dump}`);
 });
 
+test('Assembler should handle .byte directive', () => {
+  const assembler = new Assembler();
+  const dump = assembler.assemble('.byte 0x42');
+  assert.strictEqual(assembler.pc, 1);
+  assert.strictEqual(assembler.buffer[0], 0x42);
+});
+
+test('Assembler should handle multiple .byte directives', () => {
+  const assembler = new Assembler();
+  assembler.assemble('.byte 0x01\n.byte 0x02\n.byte 0x03');
+  assert.strictEqual(assembler.pc, 3);
+  assert.strictEqual(assembler.buffer[0], 0x01);
+  assert.strictEqual(assembler.buffer[1], 0x02);
+  assert.strictEqual(assembler.buffer[2], 0x03);
+});
+
+test('Assembler .align should pad to boundary', () => {
+  const assembler = new Assembler();
+  assembler.assemble('.byte 0x01\n.byte 0x02\n.byte 0x03\n.align 2');
+  assert.strictEqual(assembler.pc, 4);
+  assert.strictEqual(assembler.buffer[3], 0x00);
+});
+
+test('Assembler .align when already aligned is no-op', () => {
+  const assembler = new Assembler();
+  assembler.assemble('.word 0x12345678\n.align 2');
+  assert.strictEqual(assembler.pc, 4);
+});
+
+test('Assembler .byte followed by instruction', () => {
+  const assembler = new Assembler();
+  assembler.assemble('.byte 0x01\n.byte 0x02\n.byte 0x03\n.byte 0x04\nli t0, 10');
+  assert.strictEqual(assembler.pc, 8); // 4 bytes + 4 bytes (li fits in addi)
+});
+
+test('Assembler .byte label reference', () => {
+  const assembler = new Assembler();
+  assembler.assemble('mydata:\n.byte 0xAA\n.byte 0xBB\n.align 2\nla t0, mydata');
+  // mydata is at 0, la should load address 0
+  assert.strictEqual(assembler.buffer[0], 0xAA);
+  assert.strictEqual(assembler.buffer[1], 0xBB);
+});
+
 test('Assembler should throw on unknown instruction', () => {
   const assembler = new Assembler();
   assert.throws(
