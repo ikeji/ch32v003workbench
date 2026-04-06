@@ -138,7 +138,7 @@ func ssd1306_cmd(cmd) {
 // --- I2C ---
 
 func ssd1306_i2c_init() {
-    poke(RCC + 0x1C, peek(RCC + 0x1C) | 0x200);
+    poke(RCC + 0x1C, peek(RCC + 0x1C) | 0x200000);
     poke(RCC + 0x18, peek(RCC + 0x18) | 0x11);
     poke(GPIOC, (peek(GPIOC) & ~(0x0F << 4)) | (0x0D << 4));
     poke(GPIOC, (peek(GPIOC) & ~(0x0F << 8)) | (0x0D << 8));
@@ -146,8 +146,8 @@ func ssd1306_i2c_init() {
 }
 
 func i2c_setup() {
-    poke(RCC + 0x10, peek(RCC + 0x10) | 0x200);
-    poke(RCC + 0x10, peek(RCC + 0x10) & ~0x200);
+    poke(RCC + 0x10, peek(RCC + 0x10) | 0x200000);
+    poke(RCC + 0x10, peek(RCC + 0x10) & ~0x200000);
     poke16(I2C1 + 0x04, (peek16(I2C1 + 0x04) & 0xFFC0) | 24);
     poke16(I2C1 + 0x1C, 0xC001);
     poke16(I2C1, peek16(I2C1) | 0x01);
@@ -235,9 +235,11 @@ func i2c_send(addr, data_addr, sz) {
 
 func SystemInit() {
     poke(0x40022000, 1);
-    poke(RCC, peek(RCC) | (1 << 24));
+    poke(RCC + 0x04, 0);
+    poke(RCC, 0x1080081);
+    poke(RCC + 0x08, 0x009F0000);
     loop { if (peek(RCC) & (1 << 25)) break; }
-    poke(RCC + 0x04, peek(RCC + 0x04) | 2);
+    poke(RCC + 0x04, (peek(RCC + 0x04) & ~0x03) | 2);
     loop { if ((peek(RCC + 0x04) & 0x0C) == 8) break; }
     poke(0xE000F000, 1);
 }

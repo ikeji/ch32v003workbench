@@ -242,7 +242,7 @@ class AssemblerGenerator {
         out.push('    srl t0, t0, t1');
         out.push('    sw t0, 0(sp)');
         break;
-      case 'MOD':    this._binaryOp(out, 'remu'); break;
+      case 'MOD':    this._softModInline(out, `__smod${this._labelCounter++}`); break;
       case 'AND':    this._binaryOp(out, 'and');  break;
       case 'OR':     this._binaryOp(out, 'or');   break;
       case 'XOR':    this._binaryOp(out, 'xor');  break;
@@ -459,6 +459,32 @@ class AssemblerGenerator {
     out.push(`    j ${lbl}`);
     out.push(`${lbl}_e:`);
     out.push('    sw t2, 0(sp)');
+  }
+
+  // 非定数剰余(符号なし): t0 % t1 → t0  バイナリ長除算で余りを返す
+  // _softDivInline と同じアルゴリズム。結果が商(t2)ではなく余り(a0)。
+  _softModInline(out, lbl) {
+    out.push('    lw t1, 0(sp)');      // t1 = 除数
+    out.push('    lw t0, 4(sp)');      // t0 = 被除数
+    out.push('    addi sp, sp, 4');
+    out.push('    mv a0, zero');       // 余り = 0
+    out.push('    li a1, 31');         // ビットカウンタ (31→0)
+    out.push('    li a3, 1');          // 定数 1
+    out.push(`    beq t1, zero, ${lbl}_e`);  // ÷0 → 余り = 被除数
+    out.push(`${lbl}:`);
+    out.push('    sll a0, a0, a3');    // 余り <<= 1
+    out.push('    srl a2, t0, a1');    // a2 = 被除数 >> bit
+    out.push('    and a2, a2, a3');    // a2 &= 1
+    out.push('    or a0, a0, a2');     // 余り |= a2
+    out.push('    sltu a2, a0, t1');   // a2 = (余り < 除数)
+    out.push(`    bnez a2, ${lbl}_s`);
+    out.push('    sub a0, a0, t1');    // 余り -= 除数
+    out.push(`${lbl}_s:`);
+    out.push(`    beq a1, zero, ${lbl}_e`);
+    out.push('    addi a1, a1, -1');
+    out.push(`    j ${lbl}`);
+    out.push(`${lbl}_e:`);
+    out.push('    sw a0, 0(sp)');      // 余りを返す
   }
 
   // 定数 val を t0 にかける (t0 = t0 * val) — シフト+加算で展開

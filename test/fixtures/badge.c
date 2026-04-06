@@ -62,15 +62,32 @@ func main() {
 
 // --- システム初期化 (48MHz PLL) ---
 func SystemInit() {
+    // Flash latency 1 for 48MHz
     poke(FLASH_BASE, 1);
-    poke(RCC, peek(RCC) | (1 << 24));
+
+    // Clear clock config before enabling PLL
+    poke(RCC + 0x04, 0);
+
+    // RCC_CTLR = HSION | PLLON | HSITRIM_default
+    poke(RCC, 0x1080081);
+
+    // Clear PLL, CSSC, HSE, HSI and LSI ready flags
+    poke(RCC + 0x08, 0x009F0000);
+
+    // Wait for PLL ready
     loop {
         if (peek(RCC) & (1 << 25)) break;
     }
-    poke(RCC + 0x04, peek(RCC + 0x04) | 2);
+
+    // Select PLL as system clock
+    poke(RCC + 0x04, (peek(RCC + 0x04) & ~0x03) | 2);
+
+    // Wait for SWS = PLL
     loop {
         if ((peek(RCC + 0x04) & 0x0C) == 8) break;
     }
+
+    // Enable SysTick
     poke(0xE000F000, 1);
 }
 
@@ -136,8 +153,8 @@ func rng() {
 
 // --- I2C ---
 func i2c_setup() {
-    poke(RCC + 0x10, peek(RCC + 0x10) | 0x200);
-    poke(RCC + 0x10, peek(RCC + 0x10) & ~0x200);
+    poke(RCC + 0x10, peek(RCC + 0x10) | 0x200000);
+    poke(RCC + 0x10, peek(RCC + 0x10) & ~0x200000);
     poke16(I2C1 + 0x04, (peek16(I2C1 + 0x04) & 0xFFC0) | 24);
     poke16(I2C1 + 0x1C, 0xC001);
     poke16(I2C1, peek16(I2C1) | 0x01);
@@ -223,7 +240,7 @@ func i2c_send(addr, data_addr, sz) {
 
 // --- SSD1306 ---
 func ssd1306_i2c_init() {
-    poke(RCC + 0x1C, peek(RCC + 0x1C) | 0x200);
+    poke(RCC + 0x1C, peek(RCC + 0x1C) | 0x200000);
     poke(RCC + 0x18, peek(RCC + 0x18) | 0x11);
     // PC1 = SDA, PC2 = SCL (10MHz AF open-drain = 0x0D)
     poke(GPIOC, (peek(GPIOC) & ~(0x0F << 4)) | (0x0D << 4));
