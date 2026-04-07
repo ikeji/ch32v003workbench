@@ -29,6 +29,15 @@ class VM {
       state: 'idle', // 'idle' | 'start' | 'addr' | 'data'
     };
 
+    // GPIO port state (A=0x40010800, B=0x40010C00, C=0x40011000, D=0x40011400)
+    // Each port has: CFGLR(+0x00), INDR(+0x08), OUTDR(+0x0C), BSHR(+0x10), BCR(+0x14)
+    this.gpio = {
+      A: { cfglr: 0, indr: 0, outdr: 0 },
+      B: { cfglr: 0, indr: 0, outdr: 0 },
+      C: { cfglr: 0, indr: 0, outdr: 0 },
+      D: { cfglr: 0, indr: 0, outdr: 0 },
+    };
+
     // ADC state (simple PRNG for noise simulation)
     this.adc = {
       seed: (Date.now() ^ 0xDEAD) | 1,  // PRNG state seeded from current time
@@ -405,6 +414,8 @@ class VM {
   }
 
   _peripheralRead(addr) {
+    // GPIO registers (0x40010800-0x40011800)
+    if (addr >= 0x40010800 && addr < 0x40011800) return this._gpioRead(addr);
     if (addr === 0x40021000) return 0x03000000; // RCC_CTLR: PLLRDY|HSIRDY set
     if (addr === 0x40021004) return 0x00000008; // RCC_CFGR0: SWS=PLL
     if (addr === 0xE000F008) return this.timer_callback ? this.timer_callback() : 0; // SysTick CNT
@@ -429,6 +440,63 @@ class VM {
     }
   }
 
+  _gpioPort(addr) {
+    if (addr >= 0x40011400) return this.gpio.D;
+    if (addr >= 0x40011000) return this.gpio.C;
+    if (addr >= 0x40010C00) return this.gpio.B;
+    return this.gpio.A;
+  }
+
+  _gpioRead(addr) {
+    const port = this._gpioPort(addr);
+    const off = addr & 0x3FF;
+    switch (off) {
+      case 0x00: return port.cfglr;
+      case 0x08: return port.indr | port.outdr; // input reads both external input and output state
+      case 0x0C: return port.outdr;
+      default: return 0;
+    }
+  }
+
+  _gpioWrite(addr, val) {
+    const port = this._gpioPort(addr);
+    const off = addr & 0x3FF;
+    switch (off) {
+      case 0x00: // CFGLR
+        port.cfglr = val;
+        break;
+      case 0x0C: // OUTDR
+        port.outdr = val;
+        break;
+      case 0x10: { // BSHR
+        const setBits = val & 0xFFFF;
+        const resetBits = (val >>> 16) & 0xFFFF;
+        port.outdr = (port.outdr | setBits) & ~resetBits;
+        break;
+      }
+      case 0x14: // BCR
+        port.outdr &= ~(val & 0xFFFF);
+        break;
+    }
+  }
+
+  /**
+   * Set a GPIO input pin from outside the VM.
+   * @param {string} portName - "A", "B", "C", or "D"
+   * @param {number} pin - pin number 0-7
+   * @param {boolean} high - true for HIGH, false for LOW
+   */
+  setGpioPin(portName, pin, high) {
+    const port = this.gpio[portName];
+    if (!port) throw new Error(`Unknown GPIO port: ${portName}`);
+    if (pin < 0 || pin > 7) throw new Error(`Invalid pin number: ${pin}`);
+    if (high) {
+      port.indr |= (1 << pin);
+    } else {
+      port.indr &= ~(1 << pin);
+    }
+  }
+
   memWrite(addr, val, f3) {
     addr >>>= 0;
     if (this.log_callback) {
@@ -449,6 +517,7 @@ class VM {
         this.sram[o] = val & 0xff;
       }
     } else if (addr >= 0x40010800 && addr < 0x40011800) { // GPIO
+      this._gpioWrite(addr, val);
       if (this.gpio_callback) this.gpio_callback(addr, val);
     } else if (addr >= 0x40005400 && addr < 0x40005420) { // I2C1
       this._i2cWrite(addr, val, f3);

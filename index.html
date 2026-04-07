@@ -116,6 +116,41 @@
     .upload-input { display: none; }
     .panel-empty { color: #45475a; font-size: 12px; padding: 8px 0; text-align: center; }
 
+    /* Game controller */
+    .controller {
+      display: flex; flex-direction: column; align-items: center;
+      gap: 6px; padding: 8px 0;
+    }
+    .ctrl-shoulder {
+      display: flex; justify-content: space-between; width: 100%; gap: 4px;
+    }
+    .ctrl-body {
+      display: flex; justify-content: space-between; width: 100%; align-items: center;
+    }
+    .ctrl-dpad {
+      display: grid; grid-template-columns: 28px 28px 28px; grid-template-rows: 28px 28px 28px;
+      gap: 2px;
+    }
+    .ctrl-abxy {
+      display: grid; grid-template-columns: 28px 28px 28px; grid-template-rows: 28px 28px 28px;
+      gap: 2px;
+    }
+    .ctrl-btn {
+      width: 28px; height: 28px; border-radius: 4px;
+      border: 1px solid #585b70; background: #313244; color: #cdd6f4;
+      font-size: 10px; font-weight: 700; cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      user-select: none; -webkit-user-select: none;
+      touch-action: none;
+    }
+    .ctrl-btn.shoulder {
+      flex: 1; width: auto; height: 24px; border-radius: 6px;
+    }
+    .ctrl-btn:active, .ctrl-btn.pressed {
+      background: #89b4fa; color: #1e1e2e; border-color: #89b4fa;
+    }
+    .ctrl-btn.empty { visibility: hidden; }
+
     /* Mobile menu bar (hidden on desktop) */
     .menu-bar { display: none; }
 
@@ -281,6 +316,325 @@ func Delay_Ms(ms) {
 }`;
 
 const SAMPLE_SIMPLE = `func main() {
+}`;
+
+const SAMPLE_CONTROLLER = `// コントローラー入力テスト - 押されたボタンをOLEDに表示
+
+const SSD1306_W = 128;
+const SSD1306_H = 64;
+const SSD1306_ADDR = 0x3C;
+const FRAMEBUF = 0x20000000;
+const FRAMEBUF_SIZE = 1024;
+const SCRATCH = 0x20000400;
+const I2C1 = 0x40005400;
+const I2C_TIMEOUT = 100000;
+const RCC = 0x40021000;
+const GPIOC = 0x40011000;
+
+// ボタンピン定義 (port_index * 16 + pin_number)
+const BTN_A = 2;
+const BTN_B = 1;
+const BTN_X = 53;
+const BTN_Y = 54;
+const BTN_L = 49;
+const BTN_R = 55;
+const BTN_UP = 35;
+const BTN_RIGHT = 50;
+const BTN_DOWN = 36;
+const BTN_LEFT = 48;
+
+data SSD1306_INIT = {
+    0xAE, 0xD5, 0x80, 0xA8, 0x3F, 0xD3, 0x00, 0x40,
+    0x8D, 0x14, 0x20, 0x00, 0xA1, 0xC8, 0xDA, 0x12,
+    0x81, 0x8F, 0xD9, 0xF1, 0xDB, 0x40, 0xA4, 0xA6,
+    0xAF, 0xFF
+};
+
+// 3x5 bitmap font (column-major, bit0=top)
+// Index: A=0, B=3, X=6, Y=9, L=12, R=15, UP=18, DOWN=21, LEFT=24, RIGHT=27
+data FONT = {
+    0x1E, 0x05, 0x1E,
+    0x1F, 0x15, 0x0A,
+    0x1B, 0x04, 0x1B,
+    0x03, 0x1C, 0x03,
+    0x1F, 0x10, 0x10,
+    0x1F, 0x05, 0x1A,
+    0x06, 0x03, 0x06,
+    0x0C, 0x18, 0x0C,
+    0x04, 0x0E, 0x15,
+    0x15, 0x0E, 0x04
+};
+
+func main() {
+    SystemInit();
+    funGpioInitAll();
+    ssd1306_i2c_init();
+    ssd1306_init();
+
+    loop {
+        // Shoulder buttons
+        draw_button(4, 2, 28, 10, 12, funDigitalRead(BTN_L));
+        draw_button(96, 2, 28, 10, 15, funDigitalRead(BTN_R));
+
+        // D-pad
+        draw_button(17, 18, 16, 12, 18, funDigitalRead(BTN_UP));
+        draw_button(1, 32, 16, 12, 24, funDigitalRead(BTN_LEFT));
+        draw_button(33, 32, 16, 12, 27, funDigitalRead(BTN_RIGHT));
+        draw_button(17, 46, 16, 12, 21, funDigitalRead(BTN_DOWN));
+
+        // ABXY
+        draw_button(91, 18, 16, 12, 6, funDigitalRead(BTN_X));
+        draw_button(75, 32, 16, 12, 9, funDigitalRead(BTN_Y));
+        draw_button(107, 32, 16, 12, 0, funDigitalRead(BTN_A));
+        draw_button(91, 46, 16, 12, 3, funDigitalRead(BTN_B));
+
+        ssd1306_refresh();
+    }
+}
+
+// --- ボタン描画 ---
+
+func draw_button(x, y, w, h, font_offset, pressed) {
+    fill_rect(x + 1, y + 1, x + w - 2, y + h - 2, pressed);
+    draw_rect(x, y, x + w - 1, y + h - 1, 1);
+    var cx = x + (w - 3) / 2;
+    var cy = y + (h - 5) / 2;
+    draw_char(cx, cy, font_offset, 1 - pressed);
+}
+
+func draw_char(cx, cy, font_offset, color) {
+    var col = 0;
+    loop {
+        if (col >= 3) break;
+        var bits = peek8(FONT + font_offset + col);
+        var row = 0;
+        loop {
+            if (row >= 5) break;
+            if (bits & (1 << row)) {
+                ssd1306_drawPixel(cx + col, cy + row, color);
+            }
+            row = row + 1;
+        }
+        col = col + 1;
+    }
+}
+
+func funDigitalRead(pin) {
+    const GPIO_BASE_START = 0x40010800;
+    var gpio_base = GPIO_BASE_START + ((pin >> 4) << 10);
+    var pin_num = pin & 15;
+    return (peek(gpio_base + 8) >> pin_num) & 1;
+}
+
+// --- 描画関数 ---
+
+func draw_rect(x0, y0, x1, y1, color) {
+    draw_hline(x0, x1, y0, color);
+    draw_hline(x0, x1, y1, color);
+    draw_vline(x0, y0, y1, color);
+    draw_vline(x1, y0, y1, color);
+}
+
+func fill_rect(x0, y0, x1, y1, color) {
+    var y = y0;
+    loop {
+        if (y > y1) break;
+        draw_hline(x0, x1, y, color);
+        y = y + 1;
+    }
+}
+
+func draw_hline(x0, x1, y, color) {
+    var x = x0;
+    loop {
+        if (x > x1) break;
+        ssd1306_drawPixel(x, y, color);
+        x = x + 1;
+    }
+}
+
+func draw_vline(x, y0, y1, color) {
+    var y = y0;
+    loop {
+        if (y > y1) break;
+        ssd1306_drawPixel(x, y, color);
+        y = y + 1;
+    }
+}
+
+// --- SSD1306 ---
+
+func ssd1306_drawPixel(x, y, color) {
+    if (x >= SSD1306_W) return 0;
+    if (y >= SSD1306_H) return 0;
+    var addr = FRAMEBUF + x + (y / 8) * SSD1306_W;
+    var mask = 1 << (y & 7);
+    if (color) {
+        poke8(addr, peek8(addr) | mask);
+    } else {
+        poke8(addr, peek8(addr) & ~mask);
+    }
+    return 0;
+}
+
+func ssd1306_setbuf(color) {
+    var val = 0;
+    if (color) { val = 0xFF; }
+    var i = 0;
+    loop {
+        if (i >= FRAMEBUF_SIZE) break;
+        poke8(FRAMEBUF + i, val);
+        i = i + 1;
+    }
+}
+
+func ssd1306_init() {
+    ssd1306_setbuf(0);
+    var i = 0;
+    loop {
+        var cmd = peek8(SSD1306_INIT + i);
+        if (cmd == 0xFF) break;
+        ssd1306_cmd(cmd);
+        i = i + 1;
+    }
+    ssd1306_refresh();
+}
+
+func ssd1306_refresh() {
+    ssd1306_cmd(0x21); ssd1306_cmd(0); ssd1306_cmd(127);
+    ssd1306_cmd(0x22); ssd1306_cmd(0); ssd1306_cmd(7);
+    var offset = 0;
+    loop {
+        if (offset >= FRAMEBUF_SIZE) break;
+        poke8(SCRATCH, 0x40);
+        var j = 0;
+        loop {
+            if (j >= 32) break;
+            poke8(SCRATCH + 1 + j, peek8(FRAMEBUF + offset + j));
+            j = j + 1;
+        }
+        i2c_send(SSD1306_ADDR, SCRATCH, 33);
+        offset = offset + 32;
+    }
+}
+
+func ssd1306_cmd(cmd) {
+    poke8(SCRATCH, 0x00);
+    poke8(SCRATCH + 1, cmd);
+    return i2c_send(SSD1306_ADDR, SCRATCH, 2);
+}
+
+// --- I2C ---
+
+func ssd1306_i2c_init() {
+    poke(RCC + 0x1C, peek(RCC + 0x1C) | 0x200000);
+    poke(RCC + 0x18, peek(RCC + 0x18) | 0x11);
+    poke(GPIOC, (peek(GPIOC) & ~(0x0F << 4)) | (0x0D << 4));
+    poke(GPIOC, (peek(GPIOC) & ~(0x0F << 8)) | (0x0D << 8));
+    i2c_setup();
+}
+
+func i2c_setup() {
+    poke(RCC + 0x10, peek(RCC + 0x10) | 0x200000);
+    poke(RCC + 0x10, peek(RCC + 0x10) & ~0x200000);
+    poke16(I2C1 + 0x04, (peek16(I2C1 + 0x04) & 0xFFC0) | 24);
+    poke16(I2C1 + 0x1C, 0xC001);
+    poke16(I2C1, peek16(I2C1) | 0x01);
+    poke16(I2C1, peek16(I2C1) | 0x0400);
+}
+
+func i2c_wait_busy() {
+    var timeout = I2C_TIMEOUT;
+    loop {
+        if ((peek16(I2C1 + 0x18) & 0x02) == 0) return 1;
+        timeout = timeout - 1;
+        if (timeout == 0) return 0;
+    }
+}
+
+func i2c_start() {
+    poke16(I2C1, peek16(I2C1) | 0x100);
+    var timeout = I2C_TIMEOUT;
+    loop {
+        var star1 = peek16(I2C1 + 0x14);
+        var star2 = peek16(I2C1 + 0x18);
+        var event = star1 | (star2 << 16);
+        if ((event & 0x00030001) == 0x00030001) return 1;
+        timeout = timeout - 1;
+        if (timeout == 0) return 0;
+    }
+}
+
+func i2c_send_addr(addr) {
+    poke16(I2C1 + 0x10, addr << 1);
+    var timeout = I2C_TIMEOUT;
+    loop {
+        var star1 = peek16(I2C1 + 0x14);
+        var star2 = peek16(I2C1 + 0x18);
+        var event = star1 | (star2 << 16);
+        if ((event & 0x00070082) == 0x00070082) return 1;
+        timeout = timeout - 1;
+        if (timeout == 0) return 0;
+    }
+}
+
+func i2c_send_byte(b) {
+    var timeout = I2C_TIMEOUT;
+    loop {
+        if (peek16(I2C1 + 0x14) & 0x80) break;
+        timeout = timeout - 1;
+        if (timeout == 0) return 0;
+    }
+    poke16(I2C1 + 0x10, b);
+    return 1;
+}
+
+func i2c_wait_done() {
+    var timeout = I2C_TIMEOUT;
+    loop {
+        var star1 = peek16(I2C1 + 0x14);
+        var star2 = peek16(I2C1 + 0x18);
+        var event = star1 | (star2 << 16);
+        if (event & 0x00070084) return 1;
+        timeout = timeout - 1;
+        if (timeout == 0) return 0;
+    }
+}
+
+func i2c_stop() {
+    poke16(I2C1, peek16(I2C1) | 0x200);
+}
+
+func i2c_send(addr, data_addr, sz) {
+    i2c_wait_busy();
+    i2c_start();
+    i2c_send_addr(addr);
+    var i = 0;
+    loop {
+        if (i >= sz) break;
+        i2c_send_byte(peek8(data_addr + i));
+        i = i + 1;
+    }
+    i2c_wait_done();
+    i2c_stop();
+    return 0;
+}
+
+// --- システム初期化 ---
+
+func SystemInit() {
+    poke(0x40022000, 1);
+    poke(RCC + 0x04, 0);
+    poke(RCC, 0x1080081);
+    poke(RCC + 0x08, 0x009F0000);
+    loop { if (peek(RCC) & (1 << 25)) break; }
+    poke(RCC + 0x04, (peek(RCC + 0x04) & ~0x03) | 2);
+    loop { if ((peek(RCC + 0x04) & 0x0C) == 8) break; }
+    poke(0xE000F000, 1);
+}
+
+func funGpioInitAll() {
+    poke(RCC + 0x18, peek(RCC + 0x18) | 0x35);
 }`;
 
 const SAMPLE_SQUARE = `// SSD1306 I2C OLED に四角形を描画するサンプル
@@ -1106,6 +1460,20 @@ function fmtTime(ts) {
   return new Date(ts).toLocaleTimeString();
 }
 
+/* ---- Controller button → GPIO pin mapping ---- */
+const CTRL_BUTTONS = {
+  A:     { port: 'A', pin: 2 },
+  B:     { port: 'A', pin: 1 },
+  X:     { port: 'D', pin: 5 },
+  Y:     { port: 'D', pin: 6 },
+  L:     { port: 'D', pin: 1 },
+  R:     { port: 'D', pin: 7 },
+  UP:    { port: 'C', pin: 3 },
+  RIGHT: { port: 'D', pin: 2 },
+  DOWN:  { port: 'C', pin: 4 },
+  LEFT:  { port: 'D', pin: 0 },
+};
+
 /* ---- Tab config ---- */
 const TABS = [
   { id: 'source',  label: 'ソース' },
@@ -1214,7 +1582,7 @@ function App() {
   }
 
   function loadSample(name) {
-    const samples = { blink: SAMPLE_BLINK, simple: SAMPLE_SIMPLE, square: SAMPLE_SQUARE, badge: SAMPLE_BADGE };
+    const samples = { blink: SAMPLE_BLINK, simple: SAMPLE_SIMPLE, square: SAMPLE_SQUARE, badge: SAMPLE_BADGE, controller: SAMPLE_CONTROLLER };
     setSourceCode(samples[name] || SAMPLE_SIMPLE);
     addLog(`サンプルをロード: ${name}`);
   }
@@ -1429,6 +1797,97 @@ function App() {
 
   useEffect(() => { renderOled(); });
 
+  /* ---- Controller ---- */
+  const [pressedBtns, setPressedBtns] = useState({});
+
+  function ctrlDown(name) {
+    const mapping = CTRL_BUTTONS[name];
+    if (!mapping) return;
+    if (vmRef.current) {
+      vmRef.current.setGpioPin(mapping.port, mapping.pin, true);
+    }
+    setPressedBtns(prev => ({ ...prev, [name]: true }));
+  }
+
+  function ctrlUp(name) {
+    const mapping = CTRL_BUTTONS[name];
+    if (!mapping) return;
+    if (vmRef.current) {
+      vmRef.current.setGpioPin(mapping.port, mapping.pin, false);
+    }
+    setPressedBtns(prev => ({ ...prev, [name]: false }));
+  }
+
+  function ctrlProps(name) {
+    return {
+      className: `ctrl-btn${pressedBtns[name] ? ' pressed' : ''}`,
+      onMouseDown:  (e) => { e.preventDefault(); ctrlDown(name); },
+      onMouseUp:    (e) => { e.preventDefault(); ctrlUp(name); },
+      onMouseLeave: (e) => { if (pressedBtns[name]) ctrlUp(name); },
+      onTouchStart: (e) => { e.preventDefault(); ctrlDown(name); },
+      onTouchEnd:   (e) => { e.preventDefault(); ctrlUp(name); },
+      onTouchCancel:(e) => { ctrlUp(name); },
+    };
+  }
+
+  // Keyboard support
+  useEffect(() => {
+    const keyMap = {
+      ArrowUp: 'UP', ArrowDown: 'DOWN', ArrowLeft: 'LEFT', ArrowRight: 'RIGHT',
+      z: 'A', x: 'B', a: 'X', s: 'Y', q: 'L', w: 'R',
+      Z: 'A', X: 'B', A: 'X', S: 'Y', Q: 'L', W: 'R',
+    };
+    const onKeyDown = (e) => {
+      const name = keyMap[e.key];
+      if (name && !e.repeat) ctrlDown(name);
+    };
+    const onKeyUp = (e) => {
+      const name = keyMap[e.key];
+      if (name) ctrlUp(name);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, []);
+
+  function renderController() {
+    return (
+      <div className="controller">
+        <div className="ctrl-shoulder">
+          <button {...ctrlProps('L')} className={`ctrl-btn shoulder${pressedBtns['L'] ? ' pressed' : ''}`}>L</button>
+          <button {...ctrlProps('R')} className={`ctrl-btn shoulder${pressedBtns['R'] ? ' pressed' : ''}`}>R</button>
+        </div>
+        <div className="ctrl-body">
+          <div className="ctrl-dpad">
+            <div className="ctrl-btn empty" />
+            <button {...ctrlProps('UP')}>&#9650;</button>
+            <div className="ctrl-btn empty" />
+            <button {...ctrlProps('LEFT')}>&#9664;</button>
+            <div className="ctrl-btn empty" />
+            <button {...ctrlProps('RIGHT')}>&#9654;</button>
+            <div className="ctrl-btn empty" />
+            <button {...ctrlProps('DOWN')}>&#9660;</button>
+            <div className="ctrl-btn empty" />
+          </div>
+          <div className="ctrl-abxy">
+            <div className="ctrl-btn empty" />
+            <button {...ctrlProps('X')}>X</button>
+            <div className="ctrl-btn empty" />
+            <button {...ctrlProps('Y')}>Y</button>
+            <div className="ctrl-btn empty" />
+            <button {...ctrlProps('A')}>A</button>
+            <div className="ctrl-btn empty" />
+            <button {...ctrlProps('B')}>B</button>
+            <div className="ctrl-btn empty" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   /* ---- Render helpers ---- */
   function renderPanel() {
     switch (activeTab) {
@@ -1444,6 +1903,7 @@ function App() {
               <button className="btn" onClick={() => loadSample('blink')}>LED Blink</button>
               <button className="btn" onClick={() => loadSample('square')}>OLED Square</button>
               <button className="btn" onClick={() => loadSample('badge')}>OLED Badge</button>
+              <button className="btn" onClick={() => loadSample('controller')}>Controller</button>
               <button className="btn" onClick={() => loadSample('simple')}>empty main</button>
             </div>
             {savedFiles.length > 0 && (
@@ -1503,6 +1963,10 @@ function App() {
               <div className="panel-label">I2C OLED (SSD1306)</div>
               <canvas ref={oledCanvasRef} width={256} height={128}
                 style={{ width: '100%', maxWidth: 256, background: '#000', borderRadius: 4, imageRendering: 'pixelated' }} />
+            </div>
+            <div className="panel-section">
+              <div className="panel-label">コントローラー</div>
+              {renderController()}
             </div>
             {vmRunning && (
               <div style={{ fontSize:11, color:'#6c7086', marginTop:8 }}>
